@@ -7,7 +7,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"k8s.io/client-go/rest"
@@ -22,9 +21,9 @@ var (
 )
 
 type imageResourceModel struct {
-	ID          types.String `tfsdk:"id"`
 	GitUsername types.String `tfsdk:"git_username"`
 	GitPassword types.String `tfsdk:"git_password"`
+	AlwaysRun   types.Bool   `tfsdk:"always_run"`
 
 	Context          types.String `tfsdk:"context"`
 	Dockerfile       types.String `tfsdk:"dockerfile"`
@@ -59,12 +58,6 @@ func (r *imageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 	resp.Schema = schema.Schema{
 		Description: `Specify the image to build.`,
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-				PlanModifiers: []planmodifier.String{
-					RandomModifier(),
-				},
-			},
 			"git_username": schema.StringAttribute{
 				Optional:    true,
 				Sensitive:   true,
@@ -74,6 +67,10 @@ func (r *imageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Optional:    true,
 				Sensitive:   true,
 				Description: "Password for the git clone",
+			},
+			"always_run": schema.BoolAttribute{
+				Optional:    true,
+				Description: "Set to true to run build image every time even variables aren't change",
 			},
 			"registry_username": schema.StringAttribute{
 				Optional:    true,
@@ -138,8 +135,6 @@ func (r *imageResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	plan.ID = types.StringValue(fmt.Sprintf("kaniko-%s", utils.String(8)))
-
 	state, err := r.build(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError("kaniko build failed", err.Error())
@@ -167,6 +162,11 @@ func (r *imageResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	// Set refreshed state.
 	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
+
+	// Remove resource to support always run.
+	if state.AlwaysRun.IsNull() && state.AlwaysRun.ValueBool() {
+		resp.State.RemoveResource(ctx)
+	}
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
@@ -248,7 +248,7 @@ func (r *imageResource) build(ctx context.Context, plan imageResourceModel) (*im
 	}
 
 	options := &runOptions{
-		ID:               plan.ID.ValueString(),
+		ID:               fmt.Sprintf("kaniko-%s", utils.String(8)),
 		GitPassword:      gitPassword,
 		GitUsername:      gitUsername,
 		RegistryUsername: registryUsername,
